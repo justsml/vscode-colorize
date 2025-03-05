@@ -100,19 +100,35 @@ class VariablesStore {
     return closest || _closest;
   }
 
-  private filterDecorations(decorations: Variable[], dir: string): Variable[] {
-    const folder = dirname(dir);
-    const r = new RegExp(`^${encodeURI(folder)}`);
+  private filterDecorations(decorations: Variable[], dir: string, depth = 100): Variable[] {
+    const cache = new Map<string, Variable[]>();
+    let currentDir = dir;
+    let currentDepth = 0;
 
-    const decorationsFound = decorations.filter((deco: Variable) =>
-      r.test(encodeURI(deco.location.fileName)),
-    );
+    while (currentDepth < depth) {
+      const folder = dirname(currentDir);
+      const cacheKey = `${folder}|${decorations.length}`;
+      
+      if (cache.has(cacheKey)) {
+        return cache.get(cacheKey)!;
+      }
 
-    if (decorationsFound.length !== 0 || folder === dir) {
-      return decorationsFound;
+      const r = new RegExp(`^${encodeURI(folder)}`);
+      const decorationsFound = decorations.filter((deco: Variable) =>
+        r.test(encodeURI(deco.location.fileName))
+      );
+
+      if (decorationsFound.length !== 0 || folder === currentDir) {
+        cache.set(cacheKey, decorationsFound);
+        return decorationsFound;
+      }
+
+      cache.set(cacheKey, []);
+      currentDir = folder;
+      currentDepth++;
     }
 
-    return this.filterDecorations(decorations, folder);
+    return [];
   }
 
   // not sure it should be here ><
