@@ -40,7 +40,7 @@ class VariablesManager {
   }
 
   public async getWorkspaceVariables(
-    filesContent: [{ fileName: string; content: DocumentLine[] }],
+    filesContent: Array<{ fileName: string; content: DocumentLine[] }>,
   ) {
     this.startVariableExtraction();
     try {

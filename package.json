@@ -27,7 +27,7 @@
   "bugs": {
     "url": "https://github.com/kamikillerto/vscode-colorize/issues"
   },
-  "homepage": "https://github.com/kamikillerto/vscode-colorize/blob/master/README.MD",
+  "homepage": "https://github.com/kamikillerto/vscode-colorize/blob/master/README.md",
   "galleryBanner": {
     "theme": "light"
   },
@@ -59,9 +59,15 @@
           "type": "array",
           "markdownDescription": "Configure a list of languages that should be colorized. A list of languages can be find at https://code.visualstudio.com/docs/languages/identifiers. You can learn about languages at https://code.visualstudio.com/docs/languages/overview."
         },
+        "colorize.files": {
+          "type": "array",
+          "markdownDescription": "Specify an explicit list of files to colorize. This is useful for including specific files that might not match the patterns in `colorize.include`. Files specified here will be colorized regardless of whether they match patterns in `colorize.exclude`.",
+          "default": [],
+          "scope": 3
+        },
         "colorize.include": {
           "type": "array",
-          "markdownDescription": "Configure glob patterns for including files and folders. By default Colorize is enable for files matching one the languages defined in the `colorize.languages` config, with this config you can enable colorize for other files or folders. Read more about glob patterns [here](https://code.visualstudio.com/docs/editor/codebasics#_advanced-search-options).",
+          "markdownDescription": "Configure glob patterns for including files and folders. Files that match these patterns will be colorized unless they also match a pattern in `colorize.exclude`. By default, Colorize is enabled for files matching one of the languages defined in the `colorize.languages` config, with this config you can enable colorize for other files or folders. Read more about glob patterns [here](https://code.visualstudio.com/docs/editor/codebasics#_advanced-search-options).",
           "default": [
             "**/*.css",
             "**/*.scss",
@@ -88,7 +94,7 @@
         },
         "colorize.exclude": {
           "type": "array",
-          "markdownDescription": "Configure glob patterns for excluding files and folders. Colorize will not colorized colors in these files and folders and it'll also not search for variables inside. Read more about glob patterns [here](https://code.visualstudio.com/docs/editor/codebasics#_advanced-search-options).",
+          "markdownDescription": "Configure glob patterns for excluding files and folders. Files that match these patterns will not be colorized, even if they match patterns in `colorize.include` or have a language ID in `colorize.languages`. The extension will also not search for variables inside these files. Exclude patterns take precedence over include patterns. Read more about glob patterns [here](https://code.visualstudio.com/docs/editor/codebasics#_advanced-search-options).",
           "default": [
             "**/.git",
             "**/.svn",
@@ -188,6 +194,13 @@
           "default": true,
           "type": "boolean",
           "markdownDescription": "When vscode starts, Colorize fetch all files targeted by the settings `colorize.include` and `colorize.languages` but not the ones targeted by the setting `colorize.exclude`. When the fetch is done, colorize open and parse all files searching for variables. That way variables will be colorized in every files. _⚠️ this setting can slown down your editor a little at opening time, read this [issue](https://github.com/KamiKillertO/vscode-colorize/issues/174) to learn more about it._"
+        },
+        "colorize.fileSizeLimit": {
+          "title": "File size limit (in bytes)",
+          "default": 1048576,
+          "type": "number",
+          "minimum": 1024,
+          "markdownDescription": "Maximum file size (in bytes) that Colorize will process. Files larger than this limit will be skipped to prevent out-of-memory errors. Default is 1MB (1048576 bytes). Increase this value if you need to process larger files, but be aware that it may impact performance."
         },
         "colorize.ruler_decoration": {
           "default": true,

@@ -31,6 +31,17 @@ import Listeners from './listeners';
 import { minimatch } from 'minimatch';
 import type Variable from './lib/variables/variable';
 
+// Define interfaces for server response
+interface ExtractVariablesError {
+  fileName?: string;
+  error: string;
+}
+
+interface ExtractVariablesResponse {
+  filesContent: Array<{ fileName: string; content: DocumentLine[] }>;
+  errors?: ExtractVariablesError[];
+}
+
 import type {
   LanguageClientOptions,
   ServerOptions,
@@ -49,6 +60,7 @@ let config: ColorizeConfig = {
   filesToIncludes: [],
   inferredFilesToInclude: [],
   searchVariables: false,
+  fileSizeLimit: 1024 * 1024, // Default to 1MB
   decorationFn: generateDecorationType(),
 };
 
@@ -401,14 +413,45 @@ async function triggerVariablesExtraction(textDocument: TextDocument) {
     await startServerClient(extension.serverPath);
   }
   const workspaceFolder = workspace.getWorkspaceFolder(textDocument.uri);
-  const filesContent: [{ fileName: string; content: DocumentLine[] }] =
-    await client.sendRequest('colorize_extract_variables', {
+  
+  try {
+    const response = await client.sendRequest<ExtractVariablesResponse>('colorize_extract_variables', {
       rootFolder: workspaceFolder?.uri.fsPath,
-      includes: config.filesToIncludes.concat(config.inferredFilesToInclude), // let server infer ? What about activated languages ??
+      includes: config.filesToIncludes.concat(config.inferredFilesToInclude),
       excludes: config.filesToExcludes,
+      fileSizeLimit: config.fileSizeLimit,
     });
+    
+    // Handle the new response format which includes errors
+    if (response.errors && response.errors.length > 0) {
+      // Log errors to console
+      response.errors.forEach((error) => {
+        const errorMessage = error.fileName
+          ? `Error processing ${error.fileName}: ${error.error}`
+          : `Error: ${error.error}`;
+        console.error(errorMessage);
+      });
+      
+      // Show notification for file size limit errors
+      const fileSizeLimitErrors = response.errors.filter((e) =>
+        e.error.includes('File size exceeds limit'));
+      
+      if (fileSizeLimitErrors.length > 0) {
+        window.showWarningMessage(
+          `${fileSizeLimitErrors.length} file(s) exceeded the size limit and were skipped. ` +
+          `You can adjust the limit in settings (colorize.fileSizeLimit).`
+        );
+      }
+    }
 
-  await VariablesManager.getWorkspaceVariables(filesContent); // 👍// 👍
+    // Process the files content that were successfully extracted
+    if (response.filesContent && response.filesContent.length > 0) {
+      await VariablesManager.getWorkspaceVariables(response.filesContent);
+    }
+  } catch (error) {
+    console.error('Error during variables extraction:', error);
+    window.showErrorMessage('Failed to extract color variables. See console for details.');
+  }
 }
 
 function initEventListeners(context: ExtensionContext) {

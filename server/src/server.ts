@@ -12,7 +12,7 @@ import {
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { globbySync } from 'globby';
-import { extractFileContent } from './utils/index.js';
+import { extractFileContent, isFileSizeWithinLimit } from './utils/index.js';
 
 // Create a connection for the server, using Node's IPC as a transport.
 // Also include all preview / proposed LSP features.
@@ -90,38 +90,81 @@ interface ColorizeSettings {
   include: string[];
   exclude: string[];
   enable_search_variables: boolean;
+  fileSizeLimit: number; // Size limit in bytes, defaults to 1MB
 }
 
-// Cache the settings of all open documents
+// Default settings
+const defaultSettings: ColorizeSettings = {
+  colorized_variables: [],
+  colorized_colors: [],
+  languages: [],
+  include: [],
+  exclude: [],
+  enable_search_variables: false,
+  fileSizeLimit: 1024 * 1024 // 1MB default
+};
+
+// Cache the settings of all open documents with a maximum size limit
+const MAX_DOCUMENT_SETTINGS = 100; // Limit the number of cached document settings
 const documentSettings: Map<string, Thenable<ColorizeSettings>> = new Map();
+// Track LRU order for document settings
+const documentSettingsLRU: string[] = [];
 
 async function extractDocumentColors(textDocument: TextDocument) {
   await getDocumentSettings(textDocument.uri);
 }
 
 function getDocumentSettings(resource: string) {
-  // if (!hasConfigurationCapability) {
-  //   return Promise.resolve(globalSettings);
-  // }
+  if (!hasConfigurationCapability) {
+    return Promise.resolve(defaultSettings);
+  }
+  
+  // Update LRU order - remove if exists and add to end (most recently used)
+  const lruIndex = documentSettingsLRU.indexOf(resource);
+  if (lruIndex !== -1) {
+    documentSettingsLRU.splice(lruIndex, 1);
+  }
+  documentSettingsLRU.push(resource);
+  
   let result = documentSettings.get(resource);
   if (!result) {
+    // If we've reached the maximum size, remove the least recently used item
+    if (documentSettings.size >= MAX_DOCUMENT_SETTINGS && documentSettingsLRU.length > 0) {
+      const lruResource = documentSettingsLRU.shift();
+      if (lruResource) {
+        documentSettings.delete(lruResource);
+      }
+    }
+    
     result = connection.workspace.getConfiguration({
       scopeUri: resource,
       section: 'colorize',
+    }).then(settings => {
+      // Ensure fileSizeLimit has a value
+      if (settings.fileSizeLimit === undefined) {
+        settings.fileSizeLimit = defaultSettings.fileSizeLimit;
+      }
+      return settings;
     });
     documentSettings.set(resource, result);
   }
   return result;
 }
 
-connection.onDidChangeConfiguration((_change) => {
+connection.onDidChangeConfiguration((change) => {
   if (hasConfigurationCapability) {
     // Reset all cached document settings
     documentSettings.clear();
+    // Also clear the LRU tracking
+    documentSettingsLRU.length = 0;
   } else {
-    // globalSettings = <ColorizeSettings>(
-    //   (change.settings.languageServerExample || defaultSettings)
-    // );
+    // Use default settings if configuration capability is not available
+    const settings = change.settings.colorize || defaultSettings;
+    
+    // Ensure fileSizeLimit has a value
+    if (settings.fileSizeLimit === undefined) {
+      settings.fileSizeLimit = defaultSettings.fileSizeLimit;
+    }
   }
 
   // Revalidate all open text documents
@@ -131,6 +174,12 @@ connection.onDidChangeConfiguration((_change) => {
 // Only keep settings for open documents
 documents.onDidClose((e) => {
   documentSettings.delete(e.document.uri);
+  
+  // Also remove from LRU tracking
+  const lruIndex = documentSettingsLRU.indexOf(e.document.uri);
+  if (lruIndex !== -1) {
+    documentSettingsLRU.splice(lruIndex, 1);
+  }
 });
 
 // The content of a text document has changed. This event is emitted
@@ -149,27 +198,70 @@ connection.onDidChangeWatchedFiles((_change) => {
   connection.console.log('We received a file change event');
 });
 
+// Maximum number of files to process in a single batch
+const MAX_FILES_PER_BATCH = 100;
+
 connection.onRequest(
   'colorize_extract_variables',
-  (request: { rootFolder: string; includes: string[]; excludes: string[] }) => {
-    const files = globbySync(request.includes, {
-      cwd: request.rootFolder,
-      ignore: request.excludes,
-      absolute: true,
-    });
+  async (request: { rootFolder: string; includes: string[]; excludes: string[]; fileSizeLimit?: number }) => {
+    try {
+      // Get settings to access fileSizeLimit
+      const settings = await getDocumentSettings(request.rootFolder);
+      // Use fileSizeLimit from request if provided, otherwise use from settings
+      const fileSizeLimit = request.fileSizeLimit !== undefined ? request.fileSizeLimit : settings.fileSizeLimit;
 
-    const filesContent = files.map((fileName) => {
-      const content = extractFileContent(fileName);
-      return { fileName, content };
-    });
+      // Find all matching files
+      const files = globbySync(request.includes, {
+        cwd: request.rootFolder,
+        ignore: request.excludes,
+        absolute: true,
+      });
 
-    return filesContent;
+      // Process files in chunks to prevent memory exhaustion
+      const filesContent = [];
+      const errors = [];
 
-    // VariableManager.setupVariablesExtractors(settings.colorized_variables);
+      // Process files in batches
+      for (let i = 0; i < files.length; i += MAX_FILES_PER_BATCH) {
+        const batch = files.slice(i, i + MAX_FILES_PER_BATCH);
+        
+        for (const fileName of batch) {
+          try {
+            // Check file size before processing
+            if (!isFileSizeWithinLimit(fileName, fileSizeLimit)) {
+              errors.push({
+                fileName,
+                error: `File size exceeds limit (${fileSizeLimit} bytes)`
+              });
+              continue;
+            }
+            
+            const content = extractFileContent(fileName, fileSizeLimit);
+            filesContent.push({ fileName, content });
+          } catch (error) {
+            // Log error and continue with next file
+            connection.console.error(`Error processing file ${fileName}: ${error instanceof Error ? error.message : String(error)}`);
+            errors.push({
+              fileName,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+      }
 
-    // await Promise.all(VariableManager.extractFilesVariable(files));
-
-    // return VariableManager.getAllVariables();
+      return {
+        filesContent,
+        errors: errors.length > 0 ? errors : undefined
+      };
+    } catch (error) {
+      connection.console.error(`Error in colorize_extract_variables: ${error instanceof Error ? error.message : String(error)}`);
+      return {
+        filesContent: [],
+        errors: [{
+          error: error instanceof Error ? error.message : String(error)
+        }]
+      };
+    }
   },
 );
 

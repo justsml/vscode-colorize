@@ -20,6 +20,7 @@ interface ColorizeConfig {
   filesToIncludes: string[];
   inferredFilesToInclude: string[];
   searchVariables: boolean;
+  fileSizeLimit: number; // Size limit in bytes, defaults to 1MB
   decorationFn: (color: Color) => TextEditorDecorationType;
 }
 
@@ -44,23 +45,25 @@ function getColorizeConfig(): ColorizeConfig {
   );
   const filesToIncludes = Array.from(new Set(configuration.get('include', [])));
   const filesToExcludes = Array.from(new Set(configuration.get('exclude', [])));
+const searchVariables = configuration.get('enable_search_variables', false);
+const fileSizeLimit = configuration.get('fileSizeLimit', 1024 * 1024); // Default to 1MB
 
-  const searchVariables = configuration.get('enable_search_variables', false);
-  return {
-    languages,
-    isHideCurrentLineDecorations:
-      configuration.get('hide_current_line_decorations') ?? true,
-    colorizedColors,
-    colorizedVariables,
-    filesToIncludes,
-    filesToExcludes,
-    inferredFilesToInclude,
-    searchVariables,
-    decorationFn: generateDecorationType(
-      configuration.get('decoration_type'),
-      configuration.get('ruler_decoration'),
-    ),
-  };
+return {
+  languages,
+  isHideCurrentLineDecorations:
+    configuration.get('hide_current_line_decorations') ?? true,
+  colorizedColors,
+  colorizedVariables,
+  filesToIncludes,
+  filesToExcludes,
+  inferredFilesToInclude,
+  searchVariables,
+  fileSizeLimit,
+  decorationFn: generateDecorationType(
+    configuration.get('decoration_type'),
+    configuration.get('ruler_decoration'),
+  ),
+};
 }
 
 function generateDecorationType(
