@@ -206,6 +206,34 @@
           "default": true,
           "description": "Show colors on the overview ruler (scroll bar)",
           "type": "boolean"
+        },
+        "colorize.rate_limiting.variables_extraction_delay": {
+          "title": "Variables Extraction Rate Limit (ms)",
+          "default": 1000,
+          "type": "number",
+          "minimum": 100,
+          "markdownDescription": "Minimum time interval (in milliseconds) between variable extraction operations. Higher values reduce CPU usage but may make variable extraction less responsive. Default is 1000ms (1 second)."
+        },
+        "colorize.rate_limiting.colorize_delay": {
+          "title": "Colorize Rate Limit (ms)",
+          "default": 300,
+          "type": "number",
+          "minimum": 50,
+          "markdownDescription": "Minimum time interval (in milliseconds) between colorize operations when switching between files. Higher values reduce CPU usage but may make color highlighting less responsive. Default is 300ms."
+        },
+        "colorize.rate_limiting.selection_change_delay": {
+          "title": "Selection Change Rate Limit (ms)",
+          "default": 100,
+          "type": "number",
+          "minimum": 10,
+          "markdownDescription": "Minimum time interval (in milliseconds) between processing selection changes. Higher values reduce CPU usage but may make selection-related features less responsive. Default is 100ms."
+        },
+        "colorize.rate_limiting.decoration_delay": {
+          "title": "Decoration Rate Limit (ms)",
+          "default": 500,
+          "type": "number",
+          "minimum": 50,
+          "markdownDescription": "Minimum time interval (in milliseconds) between decoration initialization operations. Higher values reduce CPU usage but may make color decorations appear more slowly. Default is 500ms."
         }
       }
     }

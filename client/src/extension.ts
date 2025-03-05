@@ -26,6 +26,7 @@ import {
   getColorizeConfig,
   generateDecorationType,
 } from './lib/colorize-config';
+import { RateLimiter, debounce } from './lib/util/rate-limiter';
 
 import Listeners from './listeners';
 import { minimatch } from 'minimatch';
@@ -50,7 +51,6 @@ import { LanguageClient, TransportKind } from 'vscode-languageclient/node';
 import path from 'path';
 
 let client: LanguageClient;
-
 let config: ColorizeConfig = {
   languages: [],
   isHideCurrentLineDecorations: true,
@@ -61,9 +61,12 @@ let config: ColorizeConfig = {
   inferredFilesToInclude: [],
   searchVariables: false,
   fileSizeLimit: 1024 * 1024, // Default to 1MB
+  variablesExtractionDelay: 1000, // Default to 1000ms
+  colorizeDelay: 300, // Default to 300ms
+  selectionChangeDelay: 100, // Default to 100ms
+  decorationDelay: 500, // Default to 500ms
   decorationFn: generateDecorationType(),
 };
-
 class ColorizeContext {
   editor: TextEditor | undefined = undefined;
   nbLine: number | null = 0;
@@ -71,10 +74,34 @@ class ColorizeContext {
   currentSelection: number[] | null = null;
   statusBar: StatusBarItem;
   serverPath: string;
+  
+  // Rate limiters for frequently triggered operations
+  variablesExtractionLimiter: RateLimiter;
+  colorizeLimiter: RateLimiter;
+  selectionChangeLimiter: RateLimiter;
+  decorationLimiter: RateLimiter;
 
   constructor(serverPath: string) {
     this.statusBar = window.createStatusBarItem(StatusBarAlignment.Right);
     this.serverPath = serverPath;
+    
+    // Initialize rate limiters with default values
+    // These will be updated when config is loaded
+    this.variablesExtractionLimiter = new RateLimiter(1000);
+    this.colorizeLimiter = new RateLimiter(300);
+    this.selectionChangeLimiter = new RateLimiter(100);
+    this.decorationLimiter = new RateLimiter(500);
+  }
+  
+  /**
+   * Update rate limiters based on configuration
+   * @param config The current configuration
+   */
+  updateRateLimiters(config: ColorizeConfig) {
+    this.variablesExtractionLimiter = new RateLimiter(config.variablesExtractionDelay);
+    this.colorizeLimiter = new RateLimiter(config.colorizeDelay);
+    this.selectionChangeLimiter = new RateLimiter(config.selectionChangeDelay);
+    this.decorationLimiter = new RateLimiter(config.decorationDelay);
   }
 
   updateStatusBar(activated: boolean) {
@@ -94,38 +121,41 @@ class ColorizeContext {
 const q = new Queue();
 
 async function initDecorations(context: ColorizeContext) {
-  if (!context.editor) {
-    return;
-  }
-  const text = context.editor.document.getText();
-  const fileLines: DocumentLine[] = ColorUtil.textToFileLines(text);
+  // Use rate limiting for decoration initialization to prevent excessive processing
+  return context.decorationLimiter.executeAsync(async () => {
+    if (!context.editor) {
+      return;
+    }
+    const text = context.editor.document.getText();
+    const fileLines: DocumentLine[] = ColorUtil.textToFileLines(text);
 
-  const lines: DocumentLine[] = context.editor.visibleRanges.reduce(
-    (acc: DocumentLine[], range: Range) => {
-      return [...acc, ...fileLines.slice(range.start.line, range.end.line + 2)];
-    },
-    [],
-  );
+    const lines: DocumentLine[] = context.editor.visibleRanges.reduce(
+      (acc: DocumentLine[], range: Range) => {
+        return [...acc, ...fileLines.slice(range.start.line, range.end.line + 2)];
+      },
+      [],
+    );
 
-  // removeDuplicateDecorations(context);
-  await VariablesManager.findVariablesDeclarations(
-    context.editor.document.fileName,
-    fileLines,
-  );
+    // removeDuplicateDecorations(context);
+    await VariablesManager.findVariablesDeclarations(
+      context.editor.document.fileName,
+      fileLines,
+    );
 
-  const variables: LineExtraction[] = await VariablesManager.findVariables(
-    context.editor.document.fileName,
-    lines,
-  );
+    const variables: LineExtraction[] = await VariablesManager.findVariables(
+      context.editor.document.fileName,
+      lines,
+    );
 
-  const colors: LineExtraction[] = await ColorUtil.findColors(lines);
-  generateDecorations(colors, variables, context.deco);
+    const colors: LineExtraction[] = await ColorUtil.findColors(lines);
+    generateDecorations(colors, variables, context.deco);
 
-  return EditorManager.decorate(
-    context.editor,
-    context.deco,
-    context.currentSelection ?? [],
-  );
+    return EditorManager.decorate(
+      context.editor,
+      context.deco,
+      context.currentSelection ?? [],
+    );
+  });
 }
 
 function updateContextDecorations(
@@ -270,36 +300,39 @@ function handleTextSelectionChange(
   event: TextEditorSelectionChangeEvent,
   cb: () => void,
 ) {
-  if (
-    !config.isHideCurrentLineDecorations ||
-    event.textEditor !== extension.editor
-  ) {
-    return cb();
-  }
+  // Use rate limiting for selection change handling to prevent excessive processing during rapid selection changes
+  extension.selectionChangeLimiter.execute(() => {
+    if (
+      !config.isHideCurrentLineDecorations ||
+      event.textEditor !== extension.editor
+    ) {
+      return cb();
+    }
 
-  if (extension.currentSelection) {
-    extension.currentSelection.forEach((line) => {
-      const decorations = extension.deco.get(line);
-      if (decorations !== undefined) {
-        EditorManager.decorateOneLine(
-          extension.editor as TextEditor, // editor cannot be null here
-          decorations,
-          line,
-        );
+    if (extension.currentSelection) {
+      extension.currentSelection.forEach((line) => {
+        const decorations = extension.deco.get(line);
+        if (decorations !== undefined) {
+          EditorManager.decorateOneLine(
+            extension.editor as TextEditor, // editor cannot be null here
+            decorations,
+            line,
+          );
+        }
+      });
+    }
+    extension.currentSelection = [];
+    event.selections.forEach((selection: Selection) => {
+      const decorations = extension.deco.get(selection.active.line);
+      if (decorations) {
+        decorations.forEach((_) => _.hide());
       }
     });
-  }
-  extension.currentSelection = [];
-  event.selections.forEach((selection: Selection) => {
-    const decorations = extension.deco.get(selection.active.line);
-    if (decorations) {
-      decorations.forEach((_) => _.hide());
-    }
+    extension.currentSelection = event.selections.map(
+      (selection: Selection) => selection.active.line,
+    );
+    return cb();
   });
-  extension.currentSelection = event.selections.map(
-    (selection: Selection) => selection.active.line,
-  );
-  return cb();
 }
 
 function handleCloseOpen(document: TextDocument) {
@@ -316,36 +349,41 @@ function handleCloseOpen(document: TextDocument) {
 }
 
 async function colorize(editor: TextEditor, cb: () => void) {
-  extension.editor = undefined;
-  extension.deco = new Map();
-  if (!editor || !canColorize(editor.document)) {
-    extension.updateStatusBar(false);
-    return cb();
-  }
-  extension.updateStatusBar(true);
-  extension.editor = editor;
-  extension.currentSelection = editor.selections.map(
-    (selection: Selection) => selection.active.line,
-  );
-  const deco = CacheManager.getCachedDecorations(editor.document);
-  if (deco) {
-    extension.deco = deco;
-    extension.nbLine = editor.document.lineCount;
-
-    EditorManager.decorate(
-      extension.editor,
-      extension.deco,
-      extension.currentSelection,
-    );
-  } else {
-    extension.nbLine = editor.document.lineCount;
-    try {
-      await initDecorations(extension);
-    } finally {
-      CacheManager.saveDecorations(extension.editor.document, extension.deco);
+  // Use rate limiting for colorization to prevent excessive processing when switching files rapidly
+  extension.colorizeLimiter.execute(async () => {
+    extension.editor = undefined;
+    extension.deco = new Map();
+    if (!editor || !canColorize(editor.document)) {
+      extension.updateStatusBar(false);
+      return cb();
     }
-  }
-  return cb();
+    extension.updateStatusBar(true);
+    extension.editor = editor;
+    extension.currentSelection = editor.selections.map(
+      (selection: Selection) => selection.active.line,
+    );
+    const deco = CacheManager.getCachedDecorations(editor.document);
+    if (deco) {
+      extension.deco = deco;
+      extension.nbLine = editor.document.lineCount;
+
+      EditorManager.decorate(
+        extension.editor,
+        extension.deco,
+        extension.currentSelection,
+      );
+    } else {
+      extension.nbLine = editor.document.lineCount;
+      try {
+        await initDecorations(extension);
+      } finally {
+        if (extension.editor) {
+          CacheManager.saveDecorations(extension.editor.document, extension.deco);
+        }
+      }
+    }
+    return cb();
+  });
 }
 
 function handleChangeActiveTextEditor(editor: TextEditor | undefined) {
@@ -394,6 +432,9 @@ function handleConfigurationChanged() {
   clearCache();
   // delete current decorations then regenerate decorations
   ColorUtil.setupColorsExtractors(newConfig.colorizedColors);
+  
+  // Update rate limiters with new configuration values
+  extension.updateRateLimiters(newConfig);
 
   q.push(async (cb) => {
     // remove event listeners?
@@ -409,79 +450,97 @@ function handleConfigurationChanged() {
 }
 
 async function triggerVariablesExtraction(textDocument: TextDocument) {
-  if (!client) {
-    await startServerClient(extension.serverPath);
-  }
-  const workspaceFolder = workspace.getWorkspaceFolder(textDocument.uri);
-  
-  try {
-    const response = await client.sendRequest<ExtractVariablesResponse>('colorize_extract_variables', {
-      rootFolder: workspaceFolder?.uri.fsPath,
-      includes: config.filesToIncludes.concat(config.inferredFilesToInclude),
-      excludes: config.filesToExcludes,
-      fileSizeLimit: config.fileSizeLimit,
-    });
+  // Use rate limiting for variable extraction to prevent excessive server requests
+  return extension.variablesExtractionLimiter.executeAsync(async () => {
+    if (!client) {
+      await startServerClient(extension.serverPath);
+    }
+    const workspaceFolder = workspace.getWorkspaceFolder(textDocument.uri);
     
-    // Handle the new response format which includes errors
-    if (response.errors && response.errors.length > 0) {
-      // Log errors to console
-      response.errors.forEach((error) => {
-        const errorMessage = error.fileName
-          ? `Error processing ${error.fileName}: ${error.error}`
-          : `Error: ${error.error}`;
-        console.error(errorMessage);
+    try {
+      const response = await client.sendRequest<ExtractVariablesResponse>('colorize_extract_variables', {
+        rootFolder: workspaceFolder?.uri.fsPath,
+        includes: config.filesToIncludes.concat(config.inferredFilesToInclude),
+        excludes: config.filesToExcludes,
+        fileSizeLimit: config.fileSizeLimit,
       });
       
-      // Show notification for file size limit errors
-      const fileSizeLimitErrors = response.errors.filter((e) =>
-        e.error.includes('File size exceeds limit'));
-      
-      if (fileSizeLimitErrors.length > 0) {
-        window.showWarningMessage(
-          `${fileSizeLimitErrors.length} file(s) exceeded the size limit and were skipped. ` +
-          `You can adjust the limit in settings (colorize.fileSizeLimit).`
-        );
+      // Handle the new response format which includes errors
+      if (response.errors && response.errors.length > 0) {
+        // Log errors to console
+        response.errors.forEach((error) => {
+          const errorMessage = error.fileName
+            ? `Error processing ${error.fileName}: ${error.error}`
+            : `Error: ${error.error}`;
+          console.error(errorMessage);
+        });
+        
+        // Show notification for file size limit errors
+        const fileSizeLimitErrors = response.errors.filter((e) =>
+          e.error.includes('File size exceeds limit'));
+        
+        if (fileSizeLimitErrors.length > 0) {
+          window.showWarningMessage(
+            `${fileSizeLimitErrors.length} file(s) exceeded the size limit and were skipped. ` +
+            `You can adjust the limit in settings (colorize.fileSizeLimit).`
+          );
+        }
       }
-    }
 
-    // Process the files content that were successfully extracted
-    if (response.filesContent && response.filesContent.length > 0) {
-      await VariablesManager.getWorkspaceVariables(response.filesContent);
+      // Process the files content that were successfully extracted
+      if (response.filesContent && response.filesContent.length > 0) {
+        await VariablesManager.getWorkspaceVariables(response.filesContent);
+      }
+    } catch (error) {
+      console.error('Error during variables extraction:', error);
+      window.showErrorMessage('Failed to extract color variables. See console for details.');
     }
-  } catch (error) {
-    console.error('Error during variables extraction:', error);
-    window.showErrorMessage('Failed to extract color variables. See console for details.');
-  }
+  });
 }
 
 function initEventListeners(context: ExtensionContext) {
+  // Use debounced handler for text selection changes to reduce processing frequency
+  const debouncedSelectionHandler = debounce((event: TextEditorSelectionChangeEvent) => {
+    q.push((cb) => handleTextSelectionChange(event, cb));
+  }, config.selectionChangeDelay / 2); // Use half the rate limit delay for debounce
+  
   window.onDidChangeTextEditorSelection(
-    (event) => q.push((cb) => handleTextSelectionChange(event, cb)),
+    debouncedSelectionHandler,
     null,
     context.subscriptions,
   );
 
+  // Use debounced handler for document open to prevent multiple extractions
+  const debouncedVariablesExtraction = debounce(triggerVariablesExtraction, config.variablesExtractionDelay / 3); // Use 1/3 of the rate limit delay for debounce
+  
   workspace.onDidOpenTextDocument(
-    triggerVariablesExtraction,
+    debouncedVariablesExtraction,
     null,
     context.subscriptions,
   );
+  
   workspace.onDidCloseTextDocument(
     handleCloseOpen,
     null,
     context.subscriptions,
   );
+  
   workspace.onDidSaveTextDocument(handleCloseOpen, null, context.subscriptions);
+  
+  // Use debounced handler for editor changes to prevent rapid processing when switching tabs
+  const debouncedEditorChangeHandler = debounce(handleChangeActiveTextEditor, config.colorizeDelay / 3); // Use 1/3 of the rate limit delay for debounce
+  
   window.onDidChangeActiveTextEditor(
-    handleChangeActiveTextEditor,
+    debouncedEditorChangeHandler,
     null,
     context.subscriptions,
   );
+  
   workspace.onDidChangeConfiguration(
     handleConfigurationChanged,
     null,
     context.subscriptions,
-  ); // Does not update when local config file is edited manualy ><
+  ); // Does not update when local config file is edited manually ><
 
   Listeners.setupEventListeners(context);
 }
@@ -506,6 +565,9 @@ export function activate(context: ExtensionContext) {
     context.asAbsolutePath(path.join('server', 'out', 'server.js')),
   );
   config = getColorizeConfig();
+  
+  // Update rate limiters with values from configuration
+  extension.updateRateLimiters(config);
 
   ColorUtil.setupColorsExtractors(config.colorizedColors);
   VariablesManager.setupVariablesExtractors(config.colorizedVariables);

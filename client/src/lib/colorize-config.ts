@@ -22,6 +22,12 @@ interface ColorizeConfig {
   searchVariables: boolean;
   fileSizeLimit: number; // Size limit in bytes, defaults to 1MB
   decorationFn: (color: Color) => TextEditorDecorationType;
+
+  // Rate limiting configuration (in milliseconds)
+  variablesExtractionDelay: number; // Delay between variable extraction operations
+  colorizeDelay: number; // Delay between colorize operations
+  selectionChangeDelay: number; // Delay between selection change operations
+  decorationDelay: number; // Delay between decoration operations
 }
 
 function getColorizeConfig(): ColorizeConfig {
@@ -45,25 +51,44 @@ function getColorizeConfig(): ColorizeConfig {
   );
   const filesToIncludes = Array.from(new Set(configuration.get('include', [])));
   const filesToExcludes = Array.from(new Set(configuration.get('exclude', [])));
-const searchVariables = configuration.get('enable_search_variables', false);
-const fileSizeLimit = configuration.get('fileSizeLimit', 1024 * 1024); // Default to 1MB
+  const searchVariables = configuration.get('enable_search_variables', false);
+  const fileSizeLimit = configuration.get('fileSizeLimit', 1024 * 1024); // Default to 1MB
 
-return {
-  languages,
-  isHideCurrentLineDecorations:
-    configuration.get('hide_current_line_decorations') ?? true,
-  colorizedColors,
-  colorizedVariables,
-  filesToIncludes,
-  filesToExcludes,
-  inferredFilesToInclude,
-  searchVariables,
-  fileSizeLimit,
-  decorationFn: generateDecorationType(
-    configuration.get('decoration_type'),
-    configuration.get('ruler_decoration'),
-  ),
-};
+  // Get rate limiting configuration with defaults
+  const variablesExtractionDelay = configuration.get(
+    'rate_limiting.variables_extraction_delay',
+    1000,
+  ); // Default to 1000ms
+  const colorizeDelay = configuration.get('rate_limiting.colorize_delay', 300); // Default to 300ms
+  const selectionChangeDelay = configuration.get(
+    'rate_limiting.selection_change_delay',
+    100,
+  ); // Default to 100ms
+  const decorationDelay = configuration.get(
+    'rate_limiting.decoration_delay',
+    500,
+  ); // Default to 500ms
+
+  return {
+    languages,
+    isHideCurrentLineDecorations:
+      configuration.get('hide_current_line_decorations') ?? true,
+    colorizedColors,
+    colorizedVariables,
+    filesToIncludes,
+    filesToExcludes,
+    inferredFilesToInclude,
+    searchVariables,
+    fileSizeLimit,
+    variablesExtractionDelay,
+    colorizeDelay,
+    selectionChangeDelay,
+    decorationDelay,
+    decorationFn: generateDecorationType(
+      configuration.get('decoration_type'),
+      configuration.get('ruler_decoration'),
+    ),
+  };
 }
 
 function generateDecorationType(
